@@ -115,6 +115,8 @@ async def login(cluster):
         logger.error(e)
     except asyncio.TimeoutError as e:
         logger.fatal("Unable to read IAM login URL, maybe connection issue. Ensure VPN is connected!")
+    finally:
+        process.terminate()
 
 @app.command()
 def main(cluster: str):
