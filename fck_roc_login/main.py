@@ -1,5 +1,4 @@
 import subprocess
-import sys
 import os
 import asyncio
 import re
@@ -15,8 +14,10 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.remote.webelement import WebElement
 
 from .ui import AsyncWebDriverWait
+from .utils import tries
 
 dotenv.load_dotenv()
 
@@ -30,21 +31,22 @@ formatter = colorlog.ColoredFormatter(
 )
 handler.setFormatter(formatter)
 logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 app = typer.Typer()
 
-def build_driver(headless=True, user_data_dir=None):
+async def build_driver(headless=True, user_data_dir=None):
     # service = ChromeService('/Users/ts-shivansh.saini/projects/chromedriver-mac-arm64/chromedriver')
 
     # Selenium internally use Selenium manager to manage web drivers if none provided
     # docs: https://www.selenium.dev/documentation/selenium_manager/#getting-selenium-manager
     service = ChromeService()
     options = webdriver.ChromeOptions()
-    default_user_data_dir = (
-        Path.home() / ".cache" / "fck_roc_login" / "user_data"
-    )
-    _user_data_dir = user_data_dir or default_user_data_dir
-    options.add_argument(f"user-data-dir={_user_data_dir}")
+    # default_user_data_dir = (
+    #     Path.home() / ".cache" / "fck_roc_login" / "user_data"
+    # )
+    # _user_data_dir = user_data_dir or default_user_data_dir
+    # options.add_argument(f"user-data-dir={_user_data_dir}")
     if headless:
         options.add_argument("headless")
     return webdriver.Chrome(service=service, options=options)
@@ -54,30 +56,30 @@ class RocLoginMethod(object):
         self.login_url = login_url
         self.username = username
         self.password = password
-        self.driver = driver
+        self.driver: webdriver.Chrome = driver
 
     async def fill_creds(self):
-        input_username = await AsyncWebDriverWait(self.driver).until(
+        input_username: WebElement = await AsyncWebDriverWait(self.driver).until(
             EC.presence_of_element_located((By.ID, "username"))
         )
-        logger.info("sel: found username")
-        input_password = self.driver.find_element(By.ID, "password")
-        input_username.send_keys(self.username)
-        input_password.send_keys(self.password)
+        logger.debug("sel: found username")
+        input_password = await asyncio.to_thread(self.driver.find_element, By.ID, "password")
+        await asyncio.to_thread(input_username.send_keys, self.username)
+        await asyncio.to_thread(input_password.send_keys, self.password)
         await asyncio.sleep(0.5)
-        input_password.send_keys(Keys.ENTER)
+        await asyncio.to_thread(input_password.send_keys, Keys.ENTER)
 
     async def authorize_sso(self):
-        self.driver.get(self.login_url)
+        await asyncio.to_thread(self.driver.get, self.login_url)
         # await asyncio.sleep(2)
         try:
-            logger.info("opening...")
+            logger.debug("opening...")
             try:
                 is_auth = await AsyncWebDriverWait(self.driver).until(
                     EC.text_to_be_present_in_element((By.TAG_NAME, "body"), "Authenticated")
                 )
-                return is_auth
                 logger.info("already logged in...")
+                return is_auth
             except TimeoutException:
                 # not logged in
                 logger.info("trying to login for the first time...")
@@ -90,33 +92,41 @@ class RocLoginMethod(object):
             logger.error(e)
 
 URL_REGEX = r'https?://[^\s\]]+'
+
+@tries(3)
 async def find_url_in_roc_output(output_stream: asyncio.StreamReader) -> str:
-    await asyncio.sleep(0.5) # it takes time for stream to collect
-    content = (await asyncio.wait_for(output_stream.read(1000), 2.0)).decode('utf-8')
-    logger.info(f'extract url from {content}')
+    await asyncio.sleep(1) # it takes time for stream to collect
+    content = (await asyncio.wait_for(output_stream.read(1000), 5.0)).decode('utf-8')
+    logger.debug(f'{content}')
     urls = re.findall(URL_REGEX, content)
-    logger.info(urls)
+    # logger.info(urls)
     return urls[0]
 
 CMD_ROC = 'roc'
-async def login(cluster):
-    driver = build_driver()
+async def login(cluster, callback_port=None):
+    logger.info(f'Logging in {cluster}...')
+    driver = await build_driver()
     username = os.getenv("username")
     password = os.getenv("password")
-    args = ['login', '-c', cluster, '--disable-browser']
+    args = ['login', '-c', cluster, '--disable-browser'] + (['--callback-port', str(callback_port)] if callback_port else [])
     try:
         process = await asyncio.create_subprocess_exec(CMD_ROC, *args, stdout=asyncio.subprocess.PIPE)
-        logger.debug("is subprocess exec blocked?")
         url = await find_url_in_roc_output(process.stdout)
         login_method = RocLoginMethod(driver, url, username, password)
         await login_method.authorize_sso()
         await process.wait()
     except subprocess.CalledProcessError as e:
-        logger.error(e)
+        logger.error('Failed to call roc login', exc_info=True)
     except asyncio.TimeoutError as e:
-        logger.fatal("Unable to read IAM login URL, maybe connection issue. Ensure VPN is connected!")
+        logger.fatal("Unable to read IAM login URL, maybe connection issue. Ensure VPN is connected!", exc_info=False)
     finally:
-        process.terminate()
+        try:
+            process.terminate()
+            await asyncio.to_thread(driver.quit)
+        except ProcessLookupError:
+            pass
+        except Exception as e:
+            logger.warning('Failed to terminate process', exc_info=True)
 
 @app.command()
 def main(cluster: str):
