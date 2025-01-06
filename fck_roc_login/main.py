@@ -38,8 +38,6 @@ app = typer.Typer()
 
 
 async def build_driver(headless=True, user_data_dir=None):
-    # service = ChromeService('/Users/ts-shivansh.saini/projects/chromedriver-mac-arm64/chromedriver')
-
     # Selenium internally use Selenium manager to manage web drivers if none provided
     # docs: https://www.selenium.dev/documentation/selenium_manager/#getting-selenium-manager
     service = ChromeService()
