@@ -38,6 +38,26 @@ end
 
 ```
 
+To support both offline and online cluster switch, I recommend adding an additional function:
+
+```fish
+function ock --description 'Logins to OneCloud Kubernetes'
+    set cluster $argv[1]
+    if [ -z "$cluster" ];
+        echo "Usage: ock <cluster>"
+        return 1
+    end
+    set ctx (kubectl config get-contexts -oname | grep "$cluster")
+    set ctx_count (count $ctx)
+    if [ "$ctx_count" -ne 1 ];
+        echo "Context not found or ambiguous: $ctx"
+        return 2
+    end
+    kubectl config use-context "$ctx"
+    kubectl version || fck-roc-login "$cluster"
+end
+```
+
 ## Future Roadmap
 
 1. Add support of existing User's profile so selenium can reuse the credentials from saved password manager.
